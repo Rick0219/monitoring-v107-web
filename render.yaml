@@ -1,0 +1,44 @@
+services:
+  - type: web
+    name: monitoring-v107-web
+    runtime: docker
+    plan: starter
+    region: singapore
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    healthCheckPath: /api/v1/health
+    disk:
+      name: monitoring-v107-data
+      mountPath: /app/data
+      sizeGB: 10
+    envVars:
+      - key: PROJECT_NAME
+        value: 监测工作台 V1.07
+      - key: FIRST_SUPERUSER
+        sync: false
+      - key: FIRST_SUPERUSER_PASSWORD
+        sync: false
+      - key: SECRET_KEY
+        generateValue: true
+      - key: DATABASE_URL
+        fromDatabase:
+          name: monitoring-v107-db
+          property: connectionString
+      - key: FRONTEND_HOST
+        value: https://monitoring-v107-web.onrender.com
+      - key: PUBLIC_BASE_URL
+        value: https://monitoring-v107-web.onrender.com
+      - key: AI_BASE_URL
+        sync: false
+      - key: AI_MODEL
+        sync: false
+      - key: AI_API_KEY
+        sync: false
+      - key: AI_TIMEOUT
+        value: "90"
+
+databases:
+  - name: monitoring-v107-db
+    databaseName: monitoring
+    user: monitoring
+    plan: free
