@@ -27,6 +27,7 @@ import {
   useAction,
 } from "../components/Common";
 import { EntryGrid } from "../components/EntryGrid";
+import { LevelAdjustmentImport } from "../components/LevelAdjustmentImport";
 import {
   EntryTypePicker,
   entryTypes,
@@ -234,6 +235,9 @@ export function DataEntry({
       <fieldset disabled={action.busy}>
         <div className="panel-heading">
           <div>
+            <div className="entry-heading-import">
+              <LevelAdjustmentImport project={project} data={data} onApplied={refresh} />
+            </div>
             <h2 className="entry-type-title">
               <img src={selectedType?.icon} alt="" />
               {selectedType?.name}数据录入{" "}
@@ -241,18 +245,20 @@ export function DataEntry({
             </h2>
             <p>选择测项和监测期次，完成参数设置后录入，核对后保存。</p>
           </div>
-          <Button
-            onClick={() => {
-              if (discard()) {
-                setType("");
-                setKey("");
-                setRows([]);
-              }
-            }}
-          >
-            <ArrowLeft size={16} />
-            更换监测类型
-          </Button>
+          <div className="entry-heading-actions">
+            <Button
+              onClick={() => {
+                if (discard()) {
+                  setType("");
+                  setKey("");
+                  setRows([]);
+                }
+              }}
+            >
+              <ArrowLeft size={16} />
+              更换监测类型
+            </Button>
+          </div>
         </div>
         {!["water", "horizontal"].includes(type) && (
           <div className="data-setup">

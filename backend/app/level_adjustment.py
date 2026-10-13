@@ -294,6 +294,12 @@ def _parse_in1(name: str, lines: list[str], hdf: dict[tuple[str, str], tuple[flo
         if not line.strip() or not "," in line:
             continue
         parts = [part.strip() for part in line.split(",")]
+        # LEVELADJUST exports the starting control point as the first IN1 row
+        # (`point,elevation`) before the five-column observation rows.
+        if len(parts) == 2:
+            if not parts[0] or _float_or_none(parts[1]) is None:
+                raise LevelAdjustmentError(f"{name}:{line_number}: IN1 控制点行无效")
+            continue
         if len(parts) < 4:
             raise LevelAdjustmentError(f"{name}:{line_number}: IN1 行字段不足")
         from_point, to_point = parts[0], parts[1]
