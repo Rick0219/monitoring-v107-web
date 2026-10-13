@@ -65,6 +65,20 @@ class DataWrite(StrictInput):
 class DatabaseWrite(DataWrite):
     date: str = PField(min_length=1, max_length=40)
 
+class LevelAdjustmentMapping(StrictInput):
+    adjusted_point: str = PField(min_length=1, max_length=120)
+    database_point: str = PField(min_length=1, max_length=120)
+    enabled: bool = True
+
+class LevelAdjustmentApplyRequest(StrictInput):
+    revision: int = PField(ge=1)
+    import_id: str = PField(min_length=1, max_length=100)
+    measurement_key: str = PField(min_length=1, max_length=150)
+    observed_date: str = PField(min_length=1, max_length=40)
+    weight_mode: Literal["distance", "station"]
+    allow_out_of_tolerance: bool = False
+    mappings: list[LevelAdjustmentMapping] = PField(max_length=20000)
+
 class Scope(StrictInput):
     measurement_key: str = "__all__"
     start_date: str = ""

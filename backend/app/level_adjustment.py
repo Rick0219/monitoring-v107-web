@@ -238,7 +238,8 @@ def cross_check_level_outputs(parsed: ParsedLevelAdjustment, result: LevelAdjust
     if parsed.gco_closure_mm is None:
         checks.append(CrossCheck("gco", "missing", "未提供闭合差报告"))
     else:
-        difference = result.closure_error_mm - parsed.gco_closure_mm
+        observed_closure_mm = sum(observation.delta_h for observation in parsed.observations) * 1000.0
+        difference = observed_closure_mm - parsed.gco_closure_mm
         checks.append(CrossCheck("gco", "matched" if abs(difference) <= 0.02 else "mismatch", f"闭合差差异 {difference:.4f} mm", difference))
     if not parsed.our_points:
         checks.append(CrossCheck("our", "missing", "未提供最终高程文件"))

@@ -1,21 +1,40 @@
 import copy
+import hashlib
 import io
 import json
 import tempfile
+import uuid
+from dataclasses import asdict
 from typing import Annotated
 from pathlib import Path
 from urllib.parse import quote
-from fastapi import APIRouter, HTTPException, UploadFile, File, Request, Depends
+from fastapi import APIRouter, HTTPException, UploadFile, File, Form, Request, Depends
 from fastapi.responses import Response
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment
 from app.api.deps import CurrentUser, SessionDep
 from app.api.routes.projects import ProjectDep, EditProject, require_features, save_project, public
-from app.project_models import ProjectRecord, DataWrite, DatabaseWrite, DatabaseDate, Scope, Ask, ChartPreference, ChartSettings
+from app.project_models import (
+    ProjectRecord,
+    DataWrite,
+    DatabaseWrite,
+    DatabaseDate,
+    Scope,
+    Ask,
+    ChartPreference,
+    ChartSettings,
+    LevelAdjustmentApplyRequest,
+)
 from app.database_view import replace_date_rows
 from app.charts import chart_data
 from app.chart_links import make_chart_link
 from app import monitoring as m
+from app.level_adjustment import (
+    LevelAdjustmentError,
+    cross_check_level_outputs,
+    parse_level_adjustment_files,
+    solve_level_network,
+)
 from app.core.config import settings
 
 router=APIRouter(prefix="/projects/{project_id}",tags=["workspace"])
@@ -107,6 +126,133 @@ def bounded_upload(file):
     if not content:
         raise HTTPException(422,"文件为空")
     return content
+
+
+LEVEL_ADJUSTMENT_EXTENSIONS = {".dat", ".bm1", ".hdf", ".in1", ".gco", ".ou1", ".our"}
+
+
+def _level_adjustment_directory(project_id, import_id):
+    return settings.STORAGE_DIR / str(project_id) / "level-adjustments" / import_id
+
+
+def _level_adjustment_public(result, checks, parsed):
+    return {
+        "points": {point: asdict(value) for point, value in result.points.items()},
+        "observations": [asdict(value) for value in result.observations],
+        "corrections": result.corrections,
+        "total_distance_km": result.total_distance_km,
+        "closure_error_mm": result.closure_error_mm,
+        "quality": asdict(result.quality),
+        "cross_checks": [asdict(check) for check in checks],
+        "known_points": parsed.known_points,
+        "route_start": parsed.route_start,
+        "route_end": parsed.route_end,
+    }
+
+
+@router.post("/level-adjustment/preview")
+def preview_level_adjustment(
+    project: EntryProject,
+    files: list[UploadFile] = File(...),
+    weight_mode: str = Form(...),
+    observed_date: str = Form(...),
+):
+    if weight_mode not in {"distance", "station"}:
+        raise HTTPException(422, "请选择按距离定权或按测站定权")
+    if len(files) > 7:
+        raise HTTPException(422, "一次最多导入 7 个原始文件")
+    names: dict[str, bytes] = {}
+    for upload in files:
+        name = Path((upload.filename or "").replace("\\", "/")).name
+        if Path(name).suffix.lower() not in LEVEL_ADJUSTMENT_EXTENSIONS:
+            raise HTTPException(422, "仅支持 DAT、BM1、hdf、in1、gco、ou1、our 文件")
+        content = bounded_upload(upload)
+        names[name] = content
+    import_id = uuid.uuid4().hex
+    try:
+        parsed = parse_level_adjustment_files(names)
+        result = solve_level_network(parsed, weight_mode)
+        checks = cross_check_level_outputs(parsed, result)
+        target_points: list[str] = []
+        try:
+            target_points = m.MonitoringReader(m.service_for(project)).list_points("level:建筑物位移")
+        except (ValueError, KeyError, TypeError):
+            target_points = []
+        mapping_candidates = {
+            point: ([point] if not target_points or point in target_points else [candidate for candidate in target_points if point.casefold() in candidate.casefold()])
+            for point in result.points
+        }
+        directory = _level_adjustment_directory(project.id, import_id)
+        directory.mkdir(parents=True, exist_ok=False)
+        for name, content in names.items():
+            (directory / name).write_bytes(content)
+        (directory / "manifest.json").write_text(
+            json.dumps({"weight_mode": weight_mode, "observed_date": observed_date, "files": list(names)}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+    except (LevelAdjustmentError, ValueError, KeyError, TypeError, OSError) as exc:
+        data_error(exc)
+    return {
+        "import_id": import_id,
+        "files": [{"name": name, "bytes": len(content), "sha256": hashlib.sha256(content).hexdigest()} for name, content in names.items()],
+        "result": _level_adjustment_public(result, checks, parsed),
+        "quality": asdict(result.quality),
+        "cross_checks": [asdict(check) for check in checks],
+        "mapping_candidates": mapping_candidates,
+        "project_revision": project.revision,
+    }
+
+
+@router.put("/level-adjustment/apply")
+def apply_level_adjustment(body: LevelAdjustmentApplyRequest, project: EntryProject, session: SessionDep):
+    directory = _level_adjustment_directory(project.id, body.import_id)
+    manifest_path = directory / "manifest.json"
+    if not manifest_path.is_file():
+        raise HTTPException(404, "导入预览不存在或已过期")
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        if manifest.get("weight_mode") != body.weight_mode or manifest.get("observed_date") != body.observed_date:
+            raise ValueError("应用参数与预览结果不一致，请重新预览")
+        files = {name: (directory / name).read_bytes() for name in manifest.get("files", [])}
+        parsed = parse_level_adjustment_files(files)
+        result = solve_level_network(parsed, body.weight_mode)
+        checks = cross_check_level_outputs(parsed, result)
+        if any(check.status == "mismatch" for check in checks):
+            raise ValueError("原始派生文件与重新计算结果不一致，不能写入")
+        if not result.quality.can_apply and not body.allow_out_of_tolerance:
+            raise ValueError("闭合差或限差检查未通过；确认允许超限结果后才能写入")
+        if not body.mappings:
+            raise ValueError("至少选择一个点号映射")
+        measurement_key = body.measurement_key
+        if not measurement_key.startswith("level:"):
+            raise ValueError("目标测项必须是水准测项")
+        payload = copy.deepcopy(project.payload)
+        measurements = payload.setdefault("measurements", {})
+        rows = list(measurements.get(measurement_key, []))
+        existing_points = {str(row.get("点号", "")).strip() for row in rows if row.get("点号")}
+        enabled = [mapping for mapping in body.mappings if mapping.enabled]
+        if any(mapping.adjusted_point not in result.points for mapping in enabled):
+            raise ValueError("映射中包含不存在的平差点号")
+        if existing_points and any(mapping.database_point not in existing_points for mapping in enabled):
+            raise ValueError("映射中包含不属于目标水准测项的数据库点号")
+        for mapping in enabled:
+            value = result.points[mapping.adjusted_point].elevation
+            matching = [row for row in rows if str(row.get("点号", "")).strip() == mapping.database_point and str(row.get("时间", "")) == body.observed_date]
+            if matching:
+                matching[0]["测量值"] = value
+            else:
+                rows.append({"时间": body.observed_date, "点号": mapping.database_point, "测量值": value, "备注": "原始水准平差导入"})
+        if rows and any("序号" in row for row in rows):
+            for sequence, row in enumerate(rows, start=1):
+                row["序号"] = sequence
+        payload["measurements"][measurement_key] = rows
+        payload.setdefault("level_adjustment_imports", []).append({"import_id": body.import_id, "observed_date": body.observed_date, "weight_mode": body.weight_mode, "mappings": [mapping.model_dump() for mapping in enabled]})
+        save_project(session, project, body.revision, payload=payload)
+    except HTTPException:
+        raise
+    except (LevelAdjustmentError, ValueError, KeyError, TypeError, OSError) as exc:
+        data_error(exc)
+    return {**public(project, session), "message": f"已写入 {len(enabled)} 个平差点的测量值", "applied_count": len(enabled), "skipped_count": len(body.mappings) - len(enabled)}
 
 def dataset(project, include_rows):
     service=m.service_for(project)
