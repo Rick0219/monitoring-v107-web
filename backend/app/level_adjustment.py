@@ -12,6 +12,7 @@ import hashlib
 import math
 import re
 from dataclasses import dataclass, field
+from decimal import Decimal, ROUND_HALF_UP
 from typing import Literal, Mapping
 
 WeightMode = Literal["distance", "station"]
@@ -48,6 +49,8 @@ class StationObservation:
     delta_h: float | None
     source_file: str
     source_line: int
+    backsights: tuple[tuple[float, float], ...] = ()
+    foresights: tuple[tuple[float, float], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -73,6 +76,7 @@ class ParsedLevelAdjustment:
     gco_limit_mm_per_km: float | None = None
     ou1_points: dict[str, float] = field(default_factory=dict)
     our_points: dict[str, float] = field(default_factory=dict)
+    closure_limit_mm: float | None = None
 
 
 @dataclass(frozen=True)
@@ -100,6 +104,7 @@ class QualityResult:
     closure_error_mm: float | None = None
     limit_mm_per_km: float | None = None
     warnings: list[str] = field(default_factory=list)
+    closure_limit_mm: float | None = None
 
 
 @dataclass
@@ -115,7 +120,7 @@ class LevelAdjustmentResult:
 
 _NUMBER = r"[-+]?\d+(?:\.\d+)?"
 _DAT_POINT = re.compile(r"\|KD1\s+(?P<point>\S+)")
-_DAT_VALUE = re.compile(r"\|(?P<kind>Rb|Rf)\s+(?P<value>%s)\s+m\s+\|.*?\|HD\s+(?P<distance>%s)\s+m" % (_NUMBER, _NUMBER))
+_DAT_VALUE = re.compile(r"\|(?P<kind>Rb|Rf)\s+(?P<value>%s)\s+m\s*\|(?:[^|]*\|)?HD\s+(?P<distance>%s)\s+m" % (_NUMBER, _NUMBER))
 _DAT_ELEVATION = re.compile(r"\|Z\s+(?P<value>%s)\s+m" % _NUMBER)
 
 
@@ -140,16 +145,17 @@ def parse_level_adjustment_files(files: Mapping[str, bytes]) -> ParsedLevelAdjus
     in1_name = _find_extension(normalized, ".in1")
     hdf_name = _find_extension(normalized, ".hdf")
     dat_name = _find_extension(normalized, ".dat")
-    if not in1_name and not hdf_name:
-        raise LevelAdjustmentError("至少需要 IN1 或 HDF 高差文件")
+    if not in1_name and not hdf_name and not dat_name:
+        raise LevelAdjustmentError("需要 DAT 观测文件")
 
     hdf_outputs = _parse_hdf(hdf_name, text_by_name[hdf_name]) if hdf_name else {}
+    station_observations = _parse_dat(dat_name, text_by_name[dat_name]) if dat_name else []
     observations = (
         _parse_in1(in1_name, text_by_name[in1_name], hdf_outputs)
         if in1_name
-        else _observations_from_hdf(hdf_name, text_by_name[hdf_name], hdf_outputs)
+        else _observations_from_hdf(hdf_name, text_by_name[hdf_name], hdf_outputs) if hdf_name
+        else [LevelObservation(s.from_point, s.to_point, s.delta_h, s.distance_m, 1.0, s.source_file, s.source_line) for s in station_observations]
     )
-    station_observations = _parse_dat(dat_name, text_by_name[dat_name]) if dat_name else []
     if not observations:
         raise LevelAdjustmentError("没有可用于平差的测段观测")
     if len({obs.from_point for obs in observations} | {obs.to_point for obs in observations}) < 2:
@@ -175,6 +181,7 @@ def parse_level_adjustment_files(files: Mapping[str, bytes]) -> ParsedLevelAdjus
         gco_limit_mm_per_km=gco.get("limit_mm_per_km"),
         ou1_points=_parse_result_points(text_by_name[ou1_name], "ou1") if ou1_name else {},
         our_points=_parse_result_points(text_by_name[our_name], "our") if our_name else {},
+        closure_limit_mm=gco.get("closure_limit_mm"),
     )
 
 
@@ -222,10 +229,15 @@ def solve_level_network(parsed: ParsedLevelAdjustment, weight_mode: WeightMode) 
         corrections[key] = correction
         observation_results.append(AdjustmentObservationResult(observation.from_point, observation.to_point, observation.delta_h, adjusted, correction, correction, weight))
     total_m = sum(_distance_for(observation, parsed) for observation in parsed.observations)
-    closure_mm = (elevations[parsed.route_end] - elevations[parsed.route_start]) * 1000.0 if parsed.route_start == parsed.route_end else sum(item.adjusted_delta_h for item in observation_results) * 1000.0
+    closure_mm = None
+    if all(o.to_point == n.from_point for o, n in zip(parsed.observations, parsed.observations[1:])) and parsed.route_start in parsed.known_points and parsed.route_end in parsed.known_points:
+        closure_mm = (sum(o.delta_h for o in parsed.observations) - (parsed.known_points[parsed.route_end] - parsed.known_points[parsed.route_start])) * 1000.0
     quality = QualityResult(closure_error_mm=closure_mm, limit_mm_per_km=parsed.gco_limit_mm_per_km)
-    if parsed.gco_limit_mm_per_km is not None and total_m > 0:
-        allowed = parsed.gco_limit_mm_per_km * (total_m / 1000.0)
+    # The supplied LEVELADJUST report uses the national second-order route
+    # limit 4*sqrt(L km); its 0.15 mm/km figure is precision, not a limit.
+    allowed = parsed.closure_limit_mm if parsed.closure_limit_mm is not None else 4 * math.sqrt(total_m / 1000.0)
+    quality.closure_limit_mm = allowed
+    if closure_mm is not None:
         if abs(closure_mm) > allowed:
             quality.status = "warning"
             quality.warnings.append(f"闭合差 {closure_mm:.4f} mm 超过限差 {allowed:.4f} mm")
@@ -344,24 +356,56 @@ def _parse_dat(name: str | None, lines: list[str] | None) -> list[StationObserva
     if not name or lines is None:
         return []
     result: list[StationObservation] = []
-    previous: tuple[str, float, float] | None = None
-    current: tuple[str, float, float] | None = None
+    backs: list[tuple[str, float, float]] = []
+    fores: list[tuple[str, float, float]] = []
+    invalid = False
+    def flush(line_number: int):
+        nonlocal invalid
+        if invalid:
+            backs.clear()
+            fores.clear()
+            invalid = False
+            return
+        if not backs and not fores:
+            return
+        if not backs or not fores or len(backs) != len(fores):
+            raise LevelAdjustmentError(f"{name}:{line_number}: 测站前后视读数不完整")
+        if len({r[0] for r in backs}) != 1 or len({r[0] for r in fores}) != 1:
+            raise LevelAdjustmentError(f"{name}:{line_number}: 测站点号不一致")
+        delta = sum(Decimal(str(r[1])) for r in backs) / len(backs) - sum(Decimal(str(r[1])) for r in fores) / len(fores)
+        delta = float(delta.quantize(Decimal("0.00001"), rounding=ROUND_HALF_UP))
+        distance = sum(r[2] for r in backs) / len(backs) + sum(r[2] for r in fores) / len(fores)
+        if distance <= 0:
+            raise LevelAdjustmentError(f"{name}:{line_number}: 测距必须为正")
+        result.append(StationObservation(backs[0][0], fores[0][0], distance, delta, name, line_number,
+                                        tuple((r[1], r[2]) for r in backs), tuple((r[1], r[2]) for r in fores)))
+        backs.clear()
+        fores.clear()
     for line_number, line in enumerate(lines, start=1):
+        if "Station repeated" in line:
+            backs.clear()
+            fores.clear()
+            invalid = False
+            continue
+        if _DAT_ELEVATION.search(line) or "End-Line" in line or "Start-Line" in line:
+            flush(line_number)
         point_match = _DAT_POINT.search(line)
         value_match = _DAT_VALUE.search(line)
         if point_match and value_match:
-            point = point_match.group("point")
+            if "#" in point_match.group("point"):
+                invalid = True
+            point = _clean_dat_point(point_match.group("point"))
             reading = float(value_match.group("value"))
             distance = float(value_match.group("distance"))
-            if value_match.group("kind") == "Rb":
-                previous = (point, reading, distance)
-            else:
-                current = (point, reading, distance)
-                if previous and previous[0] != point:
-                    result.append(StationObservation(previous[0], point, previous[2] + distance, previous[1] - reading, name, line_number))
-                previous = None
-                current = None
+            target = backs if value_match.group("kind") == "Rb" else fores
+            target.append((point, reading, distance))
+    flush(len(lines))
     return result
+
+
+def _clean_dat_point(point: str) -> str:
+    """Remove the instrument's trailing invalid-character marker."""
+    return re.sub(r"#+$", "", point).strip()
 
 
 def _parse_gco(lines: list[str]) -> dict[str, float]:
@@ -371,9 +415,11 @@ def _parse_gco(lines: list[str]) -> dict[str, float]:
         if not values:
             continue
         value = float(values[-1])
-        if "闭合差" in line and "每公里" not in line:
+        if "限差" in line:
+            result["closure_limit_mm"] = value
+        elif "闭合差" in line and "每公里" not in line:
             result["closure_mm"] = value
-        elif "路线长度" in line:
+        elif "路线长度" in line or "闭合环长度" in line:
             result["distance_km"] = value
         elif "每公里" in line:
             result["limit_mm_per_km"] = value

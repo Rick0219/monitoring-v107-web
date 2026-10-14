@@ -72,7 +72,7 @@ class LevelAdjustmentMapping(StrictInput):
 
 class LevelAdjustmentApplyRequest(StrictInput):
     revision: int = PField(ge=1)
-    import_id: str = PField(min_length=1, max_length=100)
+    import_id: str = PField(pattern=r"^[0-9a-f]{32}$")
     measurement_key: str = PField(min_length=1, max_length=150)
     observed_date: str = PField(min_length=1, max_length=40)
     weight_mode: Literal["distance", "station"]

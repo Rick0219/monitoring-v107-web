@@ -9,7 +9,10 @@ type WeightMode = "distance" | "station";
 
 type Preview = {
   import_id: string;
+  mode: "adjusted" | "raw";
+  message: string;
   project_revision: number;
+  generated_files: { name: string; bytes: number; url: string }[];
   files: { name: string; bytes: number; sha256: string }[];
   result: {
     points: Record<string, { point: string; elevation: number; fixed: boolean }>;
@@ -19,7 +22,7 @@ type Preview = {
     route_end: string;
     total_distance_km: number;
   };
-  quality: { status: string; can_apply: boolean; closure_error_mm: number; limit_mm_per_km: number | null; warnings: string[] };
+  quality: { status: string; can_apply: boolean; closure_error_mm: number | null; limit_mm_per_km: number | null; warnings: string[] };
   cross_checks: { source: string; status: "matched" | "mismatch" | "missing"; detail: string }[];
   mapping_candidates: Record<string, string[]>;
 };
@@ -52,7 +55,7 @@ export function LevelAdjustmentImport({
     const selected = levelMeasurements.find((item) => item.key === measurementKey);
     return selected?.points || [];
   }, [levelMeasurements, measurementKey]);
-  const allFilesSelected = EXTENSIONS.every((extension) => files[extension]);
+  const hasObservationFile = Boolean(files.DAT);
 
   function reset() {
     setStep("files");
@@ -74,13 +77,13 @@ export function LevelAdjustmentImport({
   }
 
   async function previewFiles() {
-    if (!allFilesSelected) {
-      action.setError("请先选择完整的七类原始文件");
+    if (!hasObservationFile) {
+      action.setError("请先选择 DAT 观测文件");
       return;
     }
     await action.run(async () => {
       const form = new FormData();
-      EXTENSIONS.forEach((extension) => form.append("files", files[extension]!));
+      Object.values(files).forEach((file) => form.append("files", file));
       form.append("weight_mode", weightMode);
       form.append("observed_date", observedDate);
       const response = await api<Preview>(
@@ -99,6 +102,18 @@ export function LevelAdjustmentImport({
       );
       setStep("mapping");
     });
+  }
+
+  function nextFromFiles() {
+    if (!hasObservationFile) {
+      action.setError("请先选择 DAT 观测文件");
+      return;
+    }
+    if (files.BM1) {
+      setStep("settings");
+      return;
+    }
+    void previewFiles();
   }
 
   async function apply() {
@@ -153,7 +168,7 @@ export function LevelAdjustmentImport({
             {step === "files" && (
               <Form onSubmit={() => setStep("settings")}>
                 <h3>选择原始文件</h3>
-                <p className="muted">请从同一批次选择七个文件，文件内容按文本格式读取。</p>
+                <p className="muted">DAT 为必选观测文件；上传 BM1 后进行水准平差并生成派生文件，只有 DAT 时直接提取观测高程并进行点号映射。</p>
                 <div className="level-adjustment-file-grid">
                   {EXTENSIONS.map((extension) => (
                     <label className="level-adjustment-file" key={extension}>
@@ -172,7 +187,7 @@ export function LevelAdjustmentImport({
                 </div>
                 <div className="modal-actions">
                   <Button type="button" onClick={close}>取消</Button>
-                  <Button type="submit" kind="primary" disabled={!allFilesSelected}>下一步</Button>
+                  <Button type="button" kind="primary" disabled={!hasObservationFile} busy={action.busy} onClick={nextFromFiles}>下一步</Button>
                 </div>
               </Form>
             )}
@@ -204,16 +219,18 @@ export function LevelAdjustmentImport({
             {step === "mapping" && preview && (
               <div>
                 <h3>点号映射与写入</h3>
-                <p className="muted">将平差点号对应到数据库点号，未选中的点不会写入。</p>
+                <Notice success>{preview.message}</Notice>
+                <p className="muted">将{preview.mode === "adjusted" ? "平差点号" : "观测点号"}对应到数据库点号，未选中的点不会写入。</p>
                 <div className="level-adjustment-summary">
                   <span>已知点：{Object.keys(preview.result.known_points).join("、")}</span>
                   <span>路线：{preview.result.route_start} → {preview.result.route_end}</span>
                   <span>测段：{preview.result.observations.length} 段</span>
                   <span>总距离：{preview.result.total_distance_km.toFixed(4)} km</span>
-                  <span>闭合差：{preview.quality.closure_error_mm.toFixed(4)} mm</span>
+                  <span>闭合差：{preview.quality.closure_error_mm == null ? "未计算（未平差）" : `${preview.quality.closure_error_mm.toFixed(4)} mm`}</span>
                   <span>限差：{preview.quality.limit_mm_per_km == null ? "未提供" : `${preview.quality.limit_mm_per_km} mm/km`}</span>
-                  <span>{preview.quality.status === "passed" ? "质量检查通过" : "质量检查需要处理"}</span>
+                  <span>{preview.mode === "raw" ? "未进行平差" : preview.quality.status === "passed" ? "质量检查通过" : "质量检查需要处理"}</span>
                 </div>
+                {preview.generated_files.length > 0 && <div className="level-adjustment-generated"><strong>已生成派生文件：</strong>{preview.generated_files.map((file) => <a key={file.name} href={file.url} download>{file.name}</a>)}</div>}
                 <Notice>{preview.cross_checks.filter((item) => item.status !== "matched").map((item) => `${item.source}: ${item.detail}`).join("；")}</Notice>
                 <Field label="写入测项">
                   <select value={measurementKey} onChange={(event) => setMeasurementKey(event.target.value)}>
@@ -231,10 +248,10 @@ export function LevelAdjustmentImport({
                     </tbody>
                   </table>
                 </div>
-                {!preview.quality.can_apply && <label className="level-adjustment-warning"><input type="checkbox" checked={allowOutOfTolerance} onChange={(event) => setAllowOutOfTolerance(event.target.checked)} /> 仍然写入超限结果</label>}
+                {preview.mode === "adjusted" && !preview.quality.can_apply && <label className="level-adjustment-warning"><input type="checkbox" checked={allowOutOfTolerance} onChange={(event) => setAllowOutOfTolerance(event.target.checked)} /> 仍然写入超限结果</label>}
                 <div className="modal-actions">
                   <Button type="button" onClick={() => setStep("settings")}>重新计算</Button>
-                  <Button type="button" kind="primary" busy={action.busy} disabled={!preview.quality.can_apply && !allowOutOfTolerance} onClick={apply}><CheckCircle2 size={16} /> 写入今日测值</Button>
+                  <Button type="button" kind="primary" busy={action.busy} disabled={preview.mode === "adjusted" && !preview.quality.can_apply && !allowOutOfTolerance} onClick={apply}><CheckCircle2 size={16} /> 写入今日测值</Button>
                 </div>
               </div>
             )}

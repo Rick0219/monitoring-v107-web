@@ -1107,6 +1107,23 @@ html:has(.overlay) {
   border-radius: 6px;
   background: #f7fafc;
 }
+.level-adjustment-generated {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  flex-wrap: wrap;
+  margin: 14px 0;
+  padding: 10px 12px;
+  border: 1px solid #cce8db;
+  border-radius: 7px;
+  background: #eaf7f1;
+  color: #307d60;
+  font-size: 12px;
+}
+.level-adjustment-generated a {
+  color: #176f73;
+  text-decoration: underline;
+}
 .level-adjustment-table-wrap {
   max-height: 300px;
   overflow: auto;

@@ -5,6 +5,7 @@ import json
 import tempfile
 import uuid
 from dataclasses import asdict
+from datetime import date
 from typing import Annotated
 from pathlib import Path
 from urllib.parse import quote
@@ -36,6 +37,7 @@ from app.level_adjustment import (
     solve_level_network,
 )
 from app.core.config import settings
+from app.level_imports import prepare_level_import, generate_level_reports
 
 router=APIRouter(prefix="/projects/{project_id}",tags=["workspace"])
 MAX_UPLOAD=20*1024*1024
@@ -170,9 +172,10 @@ def preview_level_adjustment(
         names[name] = content
     import_id = uuid.uuid4().hex
     try:
-        parsed = parse_level_adjustment_files(names)
-        result = solve_level_network(parsed, weight_mode)
-        checks = cross_check_level_outputs(parsed, result)
+        date.fromisoformat(observed_date)
+        if len({Path(name).suffix.lower() for name in names}) != len(names):
+            raise ValueError("同一后缀只能上传一个文件")
+        mode, parsed, result, checks = prepare_level_import(names, weight_mode)
         target_points: list[str] = []
         try:
             target_points = m.MonitoringReader(m.service_for(project)).list_points("level:建筑物位移")
@@ -186,14 +189,25 @@ def preview_level_adjustment(
         directory.mkdir(parents=True, exist_ok=False)
         for name, content in names.items():
             (directory / name).write_bytes(content)
+        generated = {}
+        if mode == "adjusted":
+            dat_name = next((n for n in names if n.lower().endswith(".dat")), next(iter(names)))
+            generated = generate_level_reports(dat_name, parsed, result, observed_date)
+            output = directory / "generated"
+            output.mkdir()
+            for name, content in generated.items():
+                (output / name).write_bytes(content)
         (directory / "manifest.json").write_text(
-            json.dumps({"weight_mode": weight_mode, "observed_date": observed_date, "files": list(names)}, ensure_ascii=False),
+            json.dumps({"mode": mode, "weight_mode": weight_mode, "observed_date": observed_date, "files": list(names), "generated": list(generated)}, ensure_ascii=False),
             encoding="utf-8",
         )
     except (LevelAdjustmentError, ValueError, KeyError, TypeError, OSError) as exc:
         data_error(exc)
     return {
         "import_id": import_id,
+        "mode": mode,
+        "message": "已完成水准平差，并生成派生文件" if mode == "adjusted" else "未上传控制点文件，不做平差处理，直接使用观测高程进行点号映射",
+        "generated_files": [{"name": name, "bytes": len(content), "url": f"/api/v1/projects/{project.id}/level-adjustment/{import_id}/files/{quote(name)}"} for name, content in generated.items()],
         "files": [{"name": name, "bytes": len(content), "sha256": hashlib.sha256(content).hexdigest()} for name, content in names.items()],
         "result": _level_adjustment_public(result, checks, parsed),
         "quality": asdict(result.quality),
@@ -201,6 +215,21 @@ def preview_level_adjustment(
         "mapping_candidates": mapping_candidates,
         "project_revision": project.revision,
     }
+
+
+@router.get("/level-adjustment/{import_id}/files/{filename}")
+def download_level_adjustment_file(import_id: str, filename: str, project: EntryProject):
+    if len(import_id) != 32 or any(c not in "0123456789abcdef" for c in import_id):
+        raise HTTPException(404, "导入预览不存在")
+    directory = _level_adjustment_directory(project.id, import_id)
+    manifest_path = directory / "manifest.json"
+    if not manifest_path.is_file():
+        raise HTTPException(404, "导入预览不存在")
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if filename not in manifest.get("generated", []) or Path(filename).name != filename:
+        raise HTTPException(404, "生成文件不存在")
+    return Response((directory / "generated" / filename).read_bytes(), media_type="application/octet-stream",
+                    headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}"})
 
 
 @router.put("/level-adjustment/apply")
@@ -214,9 +243,7 @@ def apply_level_adjustment(body: LevelAdjustmentApplyRequest, project: EntryProj
         if manifest.get("weight_mode") != body.weight_mode or manifest.get("observed_date") != body.observed_date:
             raise ValueError("应用参数与预览结果不一致，请重新预览")
         files = {name: (directory / name).read_bytes() for name in manifest.get("files", [])}
-        parsed = parse_level_adjustment_files(files)
-        result = solve_level_network(parsed, body.weight_mode)
-        checks = cross_check_level_outputs(parsed, result)
+        mode, parsed, result, checks = prepare_level_import(files, body.weight_mode)
         if any(check.status == "mismatch" for check in checks):
             raise ValueError("原始派生文件与重新计算结果不一致，不能写入")
         if not result.quality.can_apply and not body.allow_out_of_tolerance:
@@ -231,6 +258,10 @@ def apply_level_adjustment(body: LevelAdjustmentApplyRequest, project: EntryProj
         rows = list(measurements.get(measurement_key, []))
         existing_points = {str(row.get("点号", "")).strip() for row in rows if row.get("点号")}
         enabled = [mapping for mapping in body.mappings if mapping.enabled]
+        if not enabled:
+            raise ValueError("至少选择一个点号映射")
+        if len({x.database_point for x in enabled}) != len(enabled) or len({x.adjusted_point for x in enabled}) != len(enabled):
+            raise ValueError("点号映射重复：每个数据库点号只能对应一个观测点")
         if any(mapping.adjusted_point not in result.points for mapping in enabled):
             raise ValueError("映射中包含不存在的平差点号")
         if existing_points and any(mapping.database_point not in existing_points for mapping in enabled):
@@ -239,20 +270,22 @@ def apply_level_adjustment(body: LevelAdjustmentApplyRequest, project: EntryProj
             value = result.points[mapping.adjusted_point].elevation
             matching = [row for row in rows if str(row.get("点号", "")).strip() == mapping.database_point and str(row.get("时间", "")) == body.observed_date]
             if matching:
+                if len(matching) > 1:
+                    raise ValueError(f"{mapping.database_point} 在 {body.observed_date} 存在重复记录")
                 matching[0]["测量值"] = value
             else:
-                rows.append({"时间": body.observed_date, "点号": mapping.database_point, "测量值": value, "备注": "原始水准平差导入"})
+                rows.append({"时间": body.observed_date, "点号": mapping.database_point, "测量值": value, "备注": "原始水准平差导入" if mode == "adjusted" else "DAT 观测高程直接导入（未平差）"})
         if rows and any("序号" in row for row in rows):
             for sequence, row in enumerate(rows, start=1):
                 row["序号"] = sequence
         payload["measurements"][measurement_key] = rows
-        payload.setdefault("level_adjustment_imports", []).append({"import_id": body.import_id, "observed_date": body.observed_date, "weight_mode": body.weight_mode, "mappings": [mapping.model_dump() for mapping in enabled]})
+        payload.setdefault("level_adjustment_imports", []).append({"import_id": body.import_id, "mode": mode, "observed_date": body.observed_date, "weight_mode": body.weight_mode if mode == "adjusted" else None, "mappings": [mapping.model_dump() for mapping in enabled]})
         save_project(session, project, body.revision, payload=payload)
     except HTTPException:
         raise
     except (LevelAdjustmentError, ValueError, KeyError, TypeError, OSError) as exc:
         data_error(exc)
-    return {**public(project, session), "message": f"已写入 {len(enabled)} 个平差点的测量值", "applied_count": len(enabled), "skipped_count": len(body.mappings) - len(enabled)}
+    return {**public(project, session), "message": f"已写入 {len(enabled)} 个{'平差' if mode == 'adjusted' else '观测'}点的测量值", "applied_count": len(enabled), "skipped_count": len(body.mappings) - len(enabled)}
 
 def dataset(project, include_rows):
     service=m.service_for(project)
