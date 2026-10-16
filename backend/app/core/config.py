@@ -37,4 +37,13 @@ class Settings(BaseSettings):
         _ = parsed.port
         return value
 
+    @field_validator("DATABASE_URL")
+    @classmethod
+    def postgres_driver(cls, value):
+        if value.startswith("postgres://"):
+            return "postgresql+psycopg://" + value[len("postgres://") :]
+        if value.startswith("postgresql://"):
+            return "postgresql+psycopg://" + value[len("postgresql://") :]
+        return value
+
 settings = Settings()
