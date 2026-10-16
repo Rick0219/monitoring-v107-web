@@ -36,6 +36,9 @@ def test_ownership_blocks_every_project_subresource(client, accounts):
         ("delete", "/documents/"+str(uuid.uuid4()), None),
         ("post", "/analysis", {"measurement_key": "__all__", "start_date":"2026-01-01","end_date":"2026-02-01"}),
         ("post", "/ask", {"question": "最大变化", "mode":"data"}),
+        ("get", "/twin/scene", None),
+        ("post", "/twin/import", None),
+        ("put", "/twin/scene", {"revision": 1, "scene": {}}),
         ("post", "/reports/preview", {"measurement_key": "__all__", "start_date":"2026-01-01","end_date":"2026-02-01"}),
         ("post", "/reports/download", {"measurement_key": "__all__", "start_date":"2026-01-01","end_date":"2026-02-01"}),
     ]

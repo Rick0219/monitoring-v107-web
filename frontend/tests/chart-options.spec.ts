@@ -83,3 +83,12 @@ test("测斜提示同时给出所属日期、深度和带符号累计位移", ()
   expect(tip).toContain("累计位移：-2 mm");
   expect(option.tooltip.triggerOn).toContain("click");
 });
+
+test("点位弹窗绘制完整历史曲线且不生成缩放滚动条", () => {
+  const data = { ...profile(), monitor: "level", selected_points: ["1"] };
+  const option = (report as any).buildReportChartOption(data, { showDataZoom: false });
+  expect(option.dataZoom).toEqual([]);
+  expect(option.series[0].data).toEqual([["2026-01-01", 0], ["2026-01-03", -1], ["2026-01-05", -2]]);
+  const standard = (report as any).buildReportChartOption(data);
+  expect(standard.dataZoom.some((control: any) => control.type === "slider")).toBe(true);
+});

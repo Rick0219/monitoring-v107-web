@@ -27,7 +27,10 @@ echarts.use([
   CanvasRenderer,
 ]);
 
-export function buildReportChartOption(data: ChartData) {
+export function buildReportChartOption(
+  data: ChartData,
+  options: { showDataZoom?: boolean } = {},
+) {
   const byPoint = new Map(data.points.map((point) => [point.point, point]));
   const selected = data.selected_points
     .map((point) => byPoint.get(point)!)
@@ -210,7 +213,7 @@ export function buildReportChartOption(data: ChartData) {
         restore: { title: "重置缩放" },
       },
     },
-    dataZoom: profile
+    dataZoom: options.showDataZoom === false || profile
       ? []
       : [
           { type: "inside", xAxisIndex: 0, zoomOnMouseWheel: "ctrl" },
@@ -227,9 +230,9 @@ export function buildReportChartOption(data: ChartData) {
     series,
   };
 }
-export default function ReportChart({ data }: { data: ChartData }) {
+export default function ReportChart({ data, compact = false }: { data: ChartData; compact?: boolean }) {
   const ref = useRef<HTMLDivElement>(null);
-  const option = useMemo(() => buildReportChartOption(data), [data]);
+  const option = useMemo(() => buildReportChartOption(data, { showDataZoom: !compact }), [data, compact]);
   useEffect(() => {
     if (!ref.current) return;
     const chart = echarts.init(ref.current);

@@ -168,6 +168,34 @@ test("数据库自然高度、完整分页、页面滚动及吸顶宽表", async
   await expect(dataRows.first()).toContainText("P125");
   await page.getByLabel("数据内容", { exact: true }).selectOption("report");
   await expect(dataRows).toHaveCount(125);
+  const reportTable = page.locator(".database-read-table--report");
+  await expect(reportTable).toBeVisible();
+  await expect(
+    page.getByRole("region", { name: "数据库表格横向滚动" }),
+  ).toBeHidden();
+  await expect(
+    reportTable
+      .locator(".database-column-unit")
+      .filter({ hasText: "（m）" })
+      .first(),
+  ).toBeVisible();
+  expect(
+    await reportTable.evaluate((table) => {
+      const style = getComputedStyle(table);
+      const viewport = table.closest(".database-table-surface")!;
+      return {
+        layout: style.tableLayout,
+        widthFits:
+          table.getBoundingClientRect().width <= viewport.clientWidth + 1,
+        headerWhiteSpace: getComputedStyle(table.querySelector("th")!)
+          .whiteSpace,
+      };
+    }),
+  ).toMatchObject({
+    layout: "fixed",
+    widthFits: true,
+    headerWhiteSpace: "normal",
+  });
   await page.evaluate(() => window.scrollTo(0, 0));
   await page.screenshot({
     path: "../docs/screenshots/database-data-compact.png",

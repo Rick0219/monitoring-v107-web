@@ -2,6 +2,7 @@ import copy
 import hashlib
 import io
 import json
+import math
 import tempfile
 import uuid
 from dataclasses import asdict
@@ -25,6 +26,7 @@ from app.project_models import (
     ChartPreference,
     ChartSettings,
     LevelAdjustmentApplyRequest,
+    TwinSceneWrite,
 )
 from app.database_view import replace_date_rows
 from app.charts import chart_data
@@ -38,9 +40,12 @@ from app.level_adjustment import (
 )
 from app.core.config import settings
 from app.level_imports import prepare_level_import, generate_level_reports
+from app.twin_dwg import TwinDwgError, scene_from_dwg
 
 router=APIRouter(prefix="/projects/{project_id}",tags=["workspace"])
 MAX_UPLOAD=20*1024*1024
+TWIN_POINT_MIN = -2.0
+TWIN_POINT_MAX = 2.0
 DatabaseProject = Annotated[ProjectRecord, Depends(require_features('database_data'))]
 ChartProject = Annotated[ProjectRecord, Depends(require_features('database_charts'))]
 EntryProject = Annotated[ProjectRecord, Depends(require_features('data_entry'))]
@@ -128,6 +133,114 @@ def bounded_upload(file):
     if not content:
         raise HTTPException(422,"文件为空")
     return content
+
+
+def validate_twin_scene(scene):
+    if not isinstance(scene, dict) or scene.get("schema_version") != 1:
+        raise ValueError("数字孪生场景格式无效或版本不支持")
+    # Sensor recognition belongs to the DWG import pipeline and is deliberately
+    # discarded here. The web scene stores only structural geometry plus points
+    # explicitly selected from the project's database catalog.
+    scene = copy.deepcopy(scene)
+    scene.pop("sensors", None)
+    scene.pop("sensor_binding_rules", None)
+    scene.pop("recognition", None)
+    scene.setdefault("placed_points", [])
+    layers = scene.get("layers", [])
+    objects = scene.get("objects", [])
+    placed_points = scene.get("placed_points", [])
+    if not isinstance(layers, list) or not isinstance(objects, list) or not isinstance(placed_points, list):
+        raise ValueError("数字孪生图层、对象和已选测点必须是数组")
+    if len(layers) > 500 or len(objects) > 20000 or len(placed_points) > 20000:
+        raise ValueError("数字孪生场景对象数量超过限制")
+    layer_ids = set()
+    for layer in layers:
+        if not isinstance(layer, dict) or not isinstance(layer.get("id"), str) or not isinstance(layer.get("name"), str):
+            raise ValueError("数字孪生图层格式无效")
+        if layer["id"] in layer_ids:
+            raise ValueError("数字孪生图层 ID 重复")
+        layer_ids.add(layer["id"])
+    for obj in objects:
+        if not isinstance(obj, dict) or not isinstance(obj.get("id"), str) or not isinstance(obj.get("geometry"), dict):
+            raise ValueError("数字孪生几何对象格式无效")
+        if obj.get("layer_id") and obj["layer_id"] not in layer_ids:
+            raise ValueError("数字孪生对象引用了不存在的图层")
+    point_ids = set()
+    for point in placed_points:
+        if not isinstance(point, dict) or not isinstance(point.get("id"), str):
+            raise ValueError("数字孪生已选测点格式无效")
+        if not isinstance(point.get("measurement_key"), str) or not isinstance(point.get("point"), str):
+            raise ValueError("数字孪生已选测点必须引用测项和点号")
+        if point["id"] in point_ids:
+            raise ValueError("数字孪生已选测点 ID 重复")
+        point_ids.add(point["id"])
+        position = point.get("position")
+        if position is not None:
+            if not isinstance(position, list) or len(position) != 2 or any(not isinstance(v, (int, float)) or not math.isfinite(v) or v < TWIN_POINT_MIN or v > TWIN_POINT_MAX for v in position):
+                raise ValueError(f"测点位置必须在 {TWIN_POINT_MIN} 到 {TWIN_POINT_MAX} 的沙盘扩展坐标范围内")
+    return scene
+
+
+@router.get("/twin/scene")
+def twin_scene(project: AnalysisProject):
+    return {"revision": project.revision, "scene": project.payload.get("twin_scene")}
+
+
+@router.post("/twin/import")
+def import_twin_scene(project: EntryProject, session: SessionDep, file: UploadFile = File(...)):
+    filename = Path((file.filename or "").replace("\\", "/")).name
+    if Path(filename).suffix.lower() != ".json":
+        raise HTTPException(422, "数字孪生导入暂支持场景 JSON 文件")
+    try:
+        content = bounded_upload(file)
+        scene = validate_twin_scene(json.loads(content.decode("utf-8-sig")))
+        payload = copy.deepcopy(project.payload)
+        payload["twin_scene"] = scene
+        save_project(session, project, project.revision, payload=payload)
+    except (UnicodeError, json.JSONDecodeError, ValueError, TypeError) as exc:
+        data_error(exc)
+    return {**public(project, session), "scene": scene, "message": "数字孪生场景已导入"}
+
+
+@router.post("/twin/dwg-preview")
+def preview_twin_dwg(project: EntryProject, file: UploadFile = File(...)):
+    filename = Path((file.filename or "").replace("\\", "/")).name
+    if Path(filename).suffix.lower() != ".dwg":
+        raise HTTPException(422, "DWG 自动生成暂支持 .dwg 文件")
+    try:
+        content = bounded_upload(file)
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / filename
+            path.write_bytes(content)
+            scene = validate_twin_scene(scene_from_dwg(path, filename))
+    except (TwinDwgError, UnicodeError, ValueError, TypeError, OSError) as exc:
+        data_error(exc)
+    scene["project"] = {"id": str(project.id), "name": project.name, "revision_at_export": project.revision}
+    return {"revision": project.revision, "scene": scene, "message": "DWG 已解析为数字孪生场景，请核对后保存"}
+
+
+def _save_twin_scene(body: TwinSceneWrite, project: EntryProject, session: SessionDep):
+    try:
+        scene = validate_twin_scene(body.scene)
+        payload = copy.deepcopy(project.payload)
+        payload["twin_scene"] = scene
+        save_project(session, project, body.revision, payload=payload)
+    except (ValueError, TypeError) as exc:
+        data_error(exc)
+    return {**public(project, session), "scene": scene, "message": "数字孪生场景已保存"}
+
+
+@router.put("/twin/scene")
+def save_twin_scene(body: TwinSceneWrite, project: EntryProject, session: SessionDep):
+    return _save_twin_scene(body, project, session)
+
+
+@router.post("/twin/scene")
+def save_twin_scene_compat(body: TwinSceneWrite, project: EntryProject, session: SessionDep):
+    # Compatibility for an already-open browser tab that still has the old
+    # POST-based bundle. New clients use PUT, but both paths share validation
+    # and optimistic revision checks.
+    return _save_twin_scene(body, project, session)
 
 
 LEVEL_ADJUSTMENT_EXTENSIONS = {".dat", ".bm1", ".hdf", ".in1", ".gco", ".ou1", ".our"}

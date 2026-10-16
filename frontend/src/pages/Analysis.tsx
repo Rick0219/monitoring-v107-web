@@ -28,6 +28,7 @@ import {
 } from "../api";
 import { Button, Empty, Modal, Notice, useAction } from "../components/Common";
 import { ScopeFields, initialScope } from "../components/ScopeFields";
+import { DigitalTwinPanel } from "../components/DigitalTwinPanel";
 export function AnalysisTable({ result }: { result: AnalysisResult }) {
   return (
     <div className="table-wrap">
@@ -164,6 +165,7 @@ export function Analysis({
   const effectiveMode = mode === "documents" && !hasDocs ? "data" : mode;
   return (
     <>
+      <DigitalTwinPanel project={project} data={data} scope={scope} setScope={setScope} />
       <div className="analysis-layout">
         <section className="analysis-main">
           <div className="panel">

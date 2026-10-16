@@ -58,6 +58,18 @@ export type DatabaseData = Pick<
   raw_rows: Row[];
   raw_columns: string[];
 };
+
+function renderDatabaseColumnHeader(column: string) {
+  const match = column.match(/^(.*?)(\s*[（(][^）)]*[）)])$/);
+  if (!match) return column;
+  return (
+    <>
+      <span className="database-column-name">{match[1]}</span>
+      <span className="database-column-unit">{match[2].trim()}</span>
+    </>
+  );
+}
+
 function useChart(project: Project, measurementKey: string) {
   return useQuery({
     queryKey: ["database-chart", project.id, measurementKey, project.revision],
@@ -303,7 +315,7 @@ function DatabaseTable({
           <div className="database-table-start" ref={tableStart}>
             <PageScrollTable>
               <table
-                className="database-read-table"
+                className={`database-read-table database-read-table--${source}`}
                 aria-label={query.data?.label || "监测数据"}
               >
                 <thead>
@@ -330,7 +342,7 @@ function DatabaseTable({
                             });
                           }}
                         >
-                          {column}
+                          {renderDatabaseColumnHeader(column)}
                           {sort.column === column
                             ? sort.descending
                               ? " ↓"

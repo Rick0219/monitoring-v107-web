@@ -53,6 +53,26 @@ export type Analysis = {
     values: { date: string; value: number | null }[];
   }[];
 };
+export type TwinPoint = {
+  id: string;
+  measurement_key: string;
+  point: string;
+  position: [number, number] | null;
+  elevation?: number;
+  visible?: boolean;
+};
+export type TwinScene = {
+  schema_version: number;
+  scene_id?: string;
+  project?: { id?: string; name?: string; revision_at_export?: number };
+  source?: Record<string, unknown>;
+  coordinate_system?: { kind?: string; axis?: string; bounds?: number[]; width_native?: number; height_native?: number };
+  layers: { id: string; name: string; visible?: boolean; locked?: boolean; color_index?: number }[];
+  objects: { id: string; layer_id?: string; source_type?: string; height?: number; geometry: Record<string, any> }[];
+  placed_points: TwinPoint[];
+  /** Legacy DWG recognition data may be present in an old file; the web UI ignores it. */
+  sensors?: TwinPoint[];
+};
 export type DocumentInfo = {
   id: string;
   name: string;

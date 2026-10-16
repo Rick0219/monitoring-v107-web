@@ -62,6 +62,10 @@ class DataWrite(StrictInput):
     measurement_key: str = PField(min_length=1, max_length=150)
     rows: list[dict] = PField(max_length=20000)
 
+class TwinSceneWrite(StrictInput):
+    revision: int = PField(ge=1)
+    scene: dict
+
 class DatabaseWrite(DataWrite):
     date: str = PField(min_length=1, max_length=40)
 

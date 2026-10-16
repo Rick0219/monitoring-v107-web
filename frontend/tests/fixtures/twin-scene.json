@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "scene_id": "browser-test-scene",
+  "layers": [
+    {"id": "layer:boundary", "name": "基坑边界", "visible": true, "locked": false}
+  ],
+  "objects": [
+    {"id": "dwg:1", "layer_id": "layer:boundary", "source_type": "line", "geometry": {"kind": "line", "points": [[0.1, 0.2], [0.9, 0.2]]}}
+  ],
+  "placed_points": []
+}
