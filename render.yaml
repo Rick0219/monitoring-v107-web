@@ -2,15 +2,11 @@ services:
   - type: web
     name: monitoring-v107-web
     runtime: docker
-    plan: starter
+    plan: free
     region: singapore
     dockerfilePath: ./Dockerfile
     dockerContext: .
     healthCheckPath: /api/v1/health
-    disk:
-      name: monitoring-v107-data
-      mountPath: /app/data
-      sizeGB: 10
     envVars:
       - key: PROJECT_NAME
         value: 监测工作台 V1.07
