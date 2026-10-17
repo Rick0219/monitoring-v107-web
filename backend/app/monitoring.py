@@ -147,16 +147,16 @@ def model_config_for(project):
             "source": "project",
         }
     return {
-        "base_url": settings.AI_BASE_URL.strip(),
-        "model": settings.AI_MODEL.strip(),
-        "api_key": settings.AI_API_KEY,
+        "base_url": "",
+        "model": "",
+        "api_key": "",
         "timeout": settings.AI_TIMEOUT,
-        "source": "server",
+        "source": "project",
     }
 
 
 def model_client(project=None):
     config = model_config_for(project)
     if not config["base_url"] or not config["model"]:
-        raise HTTPException(503,"当前工程尚未配置 AI 模型，请在“模型设置”中填写接口地址和模型；也可以使用服务器 .env 默认配置，本地模型可以不填 Key")
+        raise HTTPException(503,"当前工程尚未配置 AI 模型，请在“模型设置”中填写接口地址和模型；本地模型可以不填 Key")
     return ModelClient(ModelConfig(base_url=config["base_url"], model=config["model"], api_key=config["api_key"], key_env="", timeout=config["timeout"]))

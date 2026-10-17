@@ -1,7 +1,11 @@
 from test_projects import P, new_project
 
 
-def test_project_model_settings_are_scoped_and_api_key_is_masked(client, accounts):
+def test_project_model_settings_are_scoped_and_api_key_is_masked(client, accounts, monkeypatch):
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "AI_BASE_URL", "https://server-default.example/v1")
+    monkeypatch.setattr(settings, "AI_MODEL", "server-default-model")
     admin, (owner, owner_headers), (member, member_headers) = accounts
     project = new_project(client, owner_headers)
     url = P + "/" + project["id"]
@@ -19,9 +23,11 @@ def test_project_model_settings_are_scoped_and_api_key_is_masked(client, account
         "timeout": 90,
         "api_key_configured": False,
         "editable": True,
-        "source": "server",
+        "source": "project",
         "revision": 1,
     }
+    assert initial.json()["base_url"] == ""
+    assert initial.json()["model"] == ""
 
     saved = client.put(
         url + "/model-settings",
@@ -60,6 +66,24 @@ def test_project_model_settings_are_scoped_and_api_key_is_masked(client, account
     )
     assert denied.status_code == 403
     assert client.get(url + "/model-settings", headers=admin).status_code == 200
+
+
+def test_system_admin_can_update_project_model_settings(client, accounts):
+    admin, (owner, owner_headers), _ = accounts
+    project = new_project(client, owner_headers)
+    url = P + "/" + project["id"]
+    response = client.put(
+        url + "/model-settings",
+        headers=admin,
+        json={
+            "revision": 1,
+            "base_url": "https://ark.example.test/v1",
+            "model": "admin-endpoint",
+            "api_key": "admin-project-key",
+            "timeout": 90,
+        },
+    )
+    assert response.status_code == 200, response.text
 
 
 def test_project_model_settings_reject_stale_revision(client, accounts):

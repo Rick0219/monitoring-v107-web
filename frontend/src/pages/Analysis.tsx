@@ -475,11 +475,6 @@ export function Analysis({
           <p className="muted model-settings-intro">
             当前设置只作用于本工程。API Key 只保存于服务器，读取时不会回显。
           </p>
-          {modelSettings.data?.source === "server" && (
-            <div className="info-note model-settings-source">
-              当前使用服务器默认配置，保存后将切换为本工程配置。
-            </div>
-          )}
           {!modelSettings.data?.editable && (
             <Notice>仅工程创建人或系统管理员可以修改模型设置。</Notice>
           )}
