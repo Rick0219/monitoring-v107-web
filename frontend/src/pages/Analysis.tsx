@@ -7,6 +7,7 @@ import {
   Trash2,
   FileText,
   Download,
+  Settings2,
 } from "lucide-react";
 import {
   LineChart,
@@ -25,6 +26,7 @@ import {
   type DataSet,
   type Project,
   type DocumentInfo,
+  type ProjectModelSettings,
 } from "../api";
 import { Button, Empty, Modal, Notice, useAction } from "../components/Common";
 import { ScopeFields, initialScope } from "../components/ScopeFields";
@@ -147,9 +149,18 @@ export function Analysis({
     [question, setQuestion] = useState(""),
     [result, setResult] = useState<AnalysisResult | null>(null),
     [answer, setAnswer] = useState<any>(null),
-    [docsOpen, setDocsOpen] = useState(false);
+    [docsOpen, setDocsOpen] = useState(false),
+    [modelOpen, setModelOpen] = useState(false),
+    [modelDraft, setModelDraft] = useState({
+      base_url: "",
+      model: "",
+      timeout: 90,
+      api_key: "",
+      clear_api_key: false,
+    });
   const action = useAction(),
     upload = useAction(),
+    modelAction = useAction(),
     cache = useQueryClient(),
     base = "/projects/" + project.id;
   const docs = useQuery({
@@ -161,11 +172,54 @@ export function Analysis({
         model: string;
       }>(base + "/documents"),
   });
+  const modelSettings = useQuery<ProjectModelSettings>({
+    queryKey: ["model-settings", project.id, project.revision],
+    queryFn: () => api<ProjectModelSettings>(base + "/model-settings"),
+  });
+  function openModelSettings() {
+    const current = modelSettings.data;
+    setModelDraft({
+      base_url: current?.base_url || "",
+      model: current?.model || "",
+      timeout: current?.timeout || 90,
+      api_key: "",
+      clear_api_key: false,
+    });
+    modelAction.clearStatus();
+    setModelOpen(true);
+  }
+  function saveModelSettings() {
+    modelAction.run(async () => {
+      const current = (await modelSettings.refetch()).data;
+      if (!current) throw new Error("模型设置尚未加载，请刷新后重试");
+      await api(base + "/model-settings", {
+        method: "PUT",
+        body: JSON.stringify({
+          revision: current.revision,
+          base_url: modelDraft.base_url,
+          model: modelDraft.model,
+          timeout: modelDraft.timeout,
+          ...(modelDraft.api_key ? { api_key: modelDraft.api_key } : {}),
+          clear_api_key: modelDraft.clear_api_key,
+        }),
+      });
+      await cache.invalidateQueries({
+        queryKey: ["model-settings", project.id],
+      });
+      await cache.invalidateQueries({ queryKey: ["documents", project.id] });
+      await cache.invalidateQueries({ queryKey: ["project", project.id] });
+    }, "工程模型设置已保存");
+  }
   const hasDocs = docs.data?.documents.some((d) => d.chunk_count > 0);
   const effectiveMode = mode === "documents" && !hasDocs ? "data" : mode;
   return (
     <>
-      <DigitalTwinPanel project={project} data={data} scope={scope} setScope={setScope} />
+      <DigitalTwinPanel
+        project={project}
+        data={data}
+        scope={scope}
+        setScope={setScope}
+      />
       <div className="analysis-layout">
         <section className="analysis-main">
           <div className="panel">
@@ -177,19 +231,25 @@ export function Analysis({
                 </h2>
                 <p>结合当前工程资料与原始监测数据，生成有依据的分析草稿。</p>
               </div>
-              <Button onClick={() => setDocsOpen(true)}>
-                <FileText size={16} />
-                项目资料{" "}
-                <span className="count">
-                  {docs.data?.documents.length || 0}
-                </span>
-              </Button>
+              <div className="analysis-heading-actions">
+                <Button onClick={openModelSettings}>
+                  <Settings2 size={16} />
+                  模型设置
+                </Button>
+                <Button onClick={() => setDocsOpen(true)}>
+                  <FileText size={16} />
+                  项目资料{" "}
+                  <span className="count">
+                    {docs.data?.documents.length || 0}
+                  </span>
+                </Button>
+              </div>
             </div>
             <Notice>{action.error || docs.error?.message}</Notice>
             {!docs.data?.model_configured && (
               <div className="info-note">
-                尚未配置 AI 模型。管理员可在服务器 .env
-                中配置云端或本地模型；监测数据计算仍可直接使用。
+                尚未配置 AI
+                模型。请点击“模型设置”填写本工程的云端或本地模型；监测数据计算仍可直接使用。
               </div>
             )}
             <textarea
@@ -404,6 +464,113 @@ export function Analysis({
                 )}
               </div>
             ))}
+          </div>
+        </Modal>
+      )}
+      {modelOpen && (
+        <Modal
+          title="项目模型设置"
+          onClose={() => !modelAction.busy && setModelOpen(false)}
+        >
+          <p className="muted model-settings-intro">
+            当前设置只作用于本工程。API Key 只保存于服务器，读取时不会回显。
+          </p>
+          {modelSettings.data?.source === "server" && (
+            <div className="info-note model-settings-source">
+              当前使用服务器默认配置，保存后将切换为本工程配置。
+            </div>
+          )}
+          {!modelSettings.data?.editable && (
+            <Notice>仅工程创建人或系统管理员可以修改模型设置。</Notice>
+          )}
+          <div className="model-settings-form">
+            <label className="field">
+              <span>模型接口地址</span>
+              <input
+                disabled={!modelSettings.data?.editable || modelAction.busy}
+                value={modelDraft.base_url}
+                onChange={(event) =>
+                  setModelDraft({ ...modelDraft, base_url: event.target.value })
+                }
+                placeholder="例如：https://ark.cn-beijing.volces.com/api/v3"
+              />
+            </label>
+            <label className="field">
+              <span>模型或接入点</span>
+              <input
+                disabled={!modelSettings.data?.editable || modelAction.busy}
+                value={modelDraft.model}
+                onChange={(event) =>
+                  setModelDraft({ ...modelDraft, model: event.target.value })
+                }
+                placeholder="填写模型 ID 或推理接入点 ID"
+              />
+            </label>
+            <label className="field">
+              <span>API Key</span>
+              <input
+                disabled={!modelSettings.data?.editable || modelAction.busy}
+                type="password"
+                value={modelDraft.api_key}
+                onChange={(event) =>
+                  setModelDraft({ ...modelDraft, api_key: event.target.value })
+                }
+                placeholder={
+                  modelSettings.data?.api_key_configured
+                    ? "留空保持现有 Key"
+                    : "填写服务商 API Key"
+                }
+              />
+            </label>
+            {modelSettings.data?.api_key_configured && (
+              <p className="muted model-settings-key-note">
+                API Key 已配置，留空将保持不变
+              </p>
+            )}
+            <label className="field">
+              <span>请求超时（秒）</span>
+              <input
+                disabled={!modelSettings.data?.editable || modelAction.busy}
+                type="number"
+                min={1}
+                max={300}
+                value={modelDraft.timeout}
+                onChange={(event) =>
+                  setModelDraft({
+                    ...modelDraft,
+                    timeout: Number(event.target.value) || 90,
+                  })
+                }
+              />
+            </label>
+            {modelSettings.data?.api_key_configured && (
+              <label className="model-settings-clear-key">
+                <input
+                  disabled={!modelSettings.data?.editable || modelAction.busy}
+                  type="checkbox"
+                  checked={modelDraft.clear_api_key}
+                  onChange={(event) =>
+                    setModelDraft({
+                      ...modelDraft,
+                      clear_api_key: event.target.checked,
+                    })
+                  }
+                />
+                清除已保存的 API Key
+              </label>
+            )}
+          </div>
+          <Notice>{modelAction.error}</Notice>
+          <Notice success>{modelAction.success}</Notice>
+          <div className="modal-actions">
+            <Button
+              kind="primary"
+              busy={modelAction.busy}
+              disabled={!modelSettings.data?.editable}
+              onClick={saveModelSettings}
+            >
+              保存模型设置
+            </Button>
           </div>
         </Modal>
       )}

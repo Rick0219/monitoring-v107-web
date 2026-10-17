@@ -99,3 +99,12 @@ class Ask(Scope):
         if value not in {"hybrid","documents","data"}:
             raise ValueError("问答范围无效")
         return value
+
+
+class ProjectModelSettings(StrictInput):
+    revision: int = PField(ge=1)
+    base_url: str = PField(default="", max_length=500)
+    model: str = PField(default="", max_length=200)
+    api_key: str | None = PField(default=None, max_length=500)
+    clear_api_key: bool = False
+    timeout: int = PField(default=90, ge=1, le=300)

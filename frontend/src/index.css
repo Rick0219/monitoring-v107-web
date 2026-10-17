@@ -684,6 +684,13 @@ small,
   color: var(--muted);
   margin: 0;
 }
+.analysis-heading-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+}
 .count {
   padding: 2px 7px;
   border-radius: 5px;
@@ -1910,6 +1917,35 @@ tbody tr:hover {
   font-size: 11px;
   line-height: 1.8;
   margin-bottom: 18px;
+}
+.model-settings-intro {
+  margin-bottom: 16px;
+}
+.model-settings-source {
+  margin-bottom: 16px;
+}
+.model-settings-form {
+  display: grid;
+  gap: 13px;
+}
+.model-settings-form .field {
+  margin: 0;
+}
+.model-settings-key-note {
+  margin: -5px 0 0;
+  font-size: 11px;
+}
+.model-settings-clear-key {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: #536b7b;
+  font-size: 12px;
+}
+.model-settings-clear-key input {
+  width: 15px;
+  height: 15px;
+  margin: 0;
 }
 .answer-grid {
   display: grid;

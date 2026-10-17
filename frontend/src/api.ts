@@ -66,9 +66,27 @@ export type TwinScene = {
   scene_id?: string;
   project?: { id?: string; name?: string; revision_at_export?: number };
   source?: Record<string, unknown>;
-  coordinate_system?: { kind?: string; axis?: string; bounds?: number[]; width_native?: number; height_native?: number };
-  layers: { id: string; name: string; visible?: boolean; locked?: boolean; color_index?: number }[];
-  objects: { id: string; layer_id?: string; source_type?: string; height?: number; geometry: Record<string, any> }[];
+  coordinate_system?: {
+    kind?: string;
+    axis?: string;
+    bounds?: number[];
+    width_native?: number;
+    height_native?: number;
+  };
+  layers: {
+    id: string;
+    name: string;
+    visible?: boolean;
+    locked?: boolean;
+    color_index?: number;
+  }[];
+  objects: {
+    id: string;
+    layer_id?: string;
+    source_type?: string;
+    height?: number;
+    geometry: Record<string, any>;
+  }[];
   placed_points: TwinPoint[];
   /** Legacy DWG recognition data may be present in an old file; the web UI ignores it. */
   sensors?: TwinPoint[];
@@ -81,6 +99,15 @@ export type DocumentInfo = {
   summary: string;
   error: string;
   parser: string;
+};
+export type ProjectModelSettings = {
+  base_url: string;
+  model: string;
+  timeout: number;
+  api_key_configured: boolean;
+  editable: boolean;
+  source: "project" | "server";
+  revision: number;
 };
 export const token = () => sessionStorage.getItem("monitoring_token");
 export async function request(

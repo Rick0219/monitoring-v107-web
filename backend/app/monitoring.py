@@ -136,7 +136,27 @@ def analysis_for(project, scope):
     result["project"]={"id":str(project.id),"name":project.name}
     return result
 
-def model_client():
-    if not settings.AI_BASE_URL or not settings.AI_MODEL:
-        raise HTTPException(503,"管理员尚未配置 AI 模型，请在服务器 .env 中设置 AI_BASE_URL、AI_MODEL 和 AI_API_KEY；本地模型可以不填 Key")
-    return ModelClient(ModelConfig(base_url=settings.AI_BASE_URL,model=settings.AI_MODEL,api_key=settings.AI_API_KEY,key_env="",timeout=settings.AI_TIMEOUT))
+def model_config_for(project):
+    configured = project.payload.get("ai_model") if project is not None else None
+    if isinstance(configured, dict):
+        return {
+            "base_url": str(configured.get("base_url", "")).strip(),
+            "model": str(configured.get("model", "")).strip(),
+            "api_key": str(configured.get("api_key", "")),
+            "timeout": int(configured.get("timeout", settings.AI_TIMEOUT)),
+            "source": "project",
+        }
+    return {
+        "base_url": settings.AI_BASE_URL.strip(),
+        "model": settings.AI_MODEL.strip(),
+        "api_key": settings.AI_API_KEY,
+        "timeout": settings.AI_TIMEOUT,
+        "source": "server",
+    }
+
+
+def model_client(project=None):
+    config = model_config_for(project)
+    if not config["base_url"] or not config["model"]:
+        raise HTTPException(503,"当前工程尚未配置 AI 模型，请在“模型设置”中填写接口地址和模型；也可以使用服务器 .env 默认配置，本地模型可以不填 Key")
+    return ModelClient(ModelConfig(base_url=config["base_url"], model=config["model"], api_key=config["api_key"], key_env="", timeout=config["timeout"]))

@@ -15,7 +15,7 @@ from fastapi.responses import Response
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment
 from app.api.deps import CurrentUser, SessionDep
-from app.api.routes.projects import ProjectDep, EditProject, require_features, save_project, public
+from app.api.routes.projects import ProjectDep, EditProject, require_features, save_project, public, require_manager
 from app.project_models import (
     ProjectRecord,
     DataWrite,
@@ -27,6 +27,7 @@ from app.project_models import (
     ChartSettings,
     LevelAdjustmentApplyRequest,
     TwinSceneWrite,
+    ProjectModelSettings,
 )
 from app.database_view import replace_date_rows
 from app.charts import chart_data
@@ -495,8 +496,50 @@ def import_project(project:EditProject,session:SessionDep,revision:int,file:Uplo
 
 @router.get("/documents")
 def documents(project:AnalysisProject):
+    model = m.model_config_for(project)
     return {"documents":[document_public(d) for d in m.knowledge_for(project).list_documents()],
-            "model_configured":bool(settings.AI_BASE_URL and settings.AI_MODEL),"model":settings.AI_MODEL}
+            "model_configured":bool(model["base_url"] and model["model"]),"model":model["model"]}
+
+
+@router.get("/model-settings")
+def model_settings(project: AnalysisProject, current_user: CurrentUser):
+    config = m.model_config_for(project)
+    return {
+        "base_url": config["base_url"],
+        "model": config["model"],
+        "timeout": config["timeout"],
+        "api_key_configured": bool(config["api_key"]),
+        "editable": project.owner_id == current_user.id or current_user.is_superuser,
+        "source": config["source"],
+        "revision": project.revision,
+    }
+
+
+@router.put("/model-settings")
+def save_model_settings(body: ProjectModelSettings, project: AnalysisProject,
+                        session: SessionDep, current_user: CurrentUser):
+    require_manager(project, current_user)
+    payload = copy.deepcopy(project.payload)
+    previous = payload.get("ai_model")
+    if not isinstance(previous, dict):
+        previous = {}
+    config = {
+        "base_url": body.base_url,
+        "model": body.model,
+        "timeout": body.timeout,
+        "api_key": previous.get("api_key", ""),
+    }
+    if body.clear_api_key:
+        config["api_key"] = ""
+    elif body.api_key:
+        config["api_key"] = body.api_key
+    payload["ai_model"] = config
+    save_project(session, project, body.revision, payload=payload)
+    return {
+        "message": "工程模型设置已保存",
+        "revision": project.revision,
+        "api_key_configured": bool(config["api_key"]),
+    }
 
 @router.post("/documents")
 def add_document(project:EditProject,file:UploadFile=File(...)):
@@ -533,7 +576,7 @@ def ask(body:Ask,project:AnalysisProject):
     store=m.knowledge_for(project)
     if body.mode=="documents" and not any(d["chunk_count"] for d in store.list_documents()):
         raise HTTPException(422,"请先上传并成功解析项目资料")
-    client=m.model_client()
+    client=m.model_client(project)
     try:
         assistant=m.AnalysisAssistant(store,m.MonitoringReader(m.service_for(project)),client)
         result=assistant.answer(body.question,body.model_dump(exclude={"question"}))

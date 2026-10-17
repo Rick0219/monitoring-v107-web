@@ -100,13 +100,21 @@ def test_ai_uses_real_project_evidence_and_returns_provider_answer(client,accoun
             pass
     server=HTTPServer(("127.0.0.1",0),Provider)
     threading.Thread(target=server.serve_forever,daemon=True).start()
-    monkeypatch.setattr(settings,"AI_BASE_URL",f"http://127.0.0.1:{server.server_port}/v1")
-    monkeypatch.setattr(settings,"AI_MODEL","test-provider-model")
-    monkeypatch.setattr(settings,"AI_API_KEY","test-private-key")
+    monkeypatch.setattr(settings,"AI_BASE_URL","http://127.0.0.1:1/v1")
+    monkeypatch.setattr(settings,"AI_MODEL","server-model")
+    monkeypatch.setattr(settings,"AI_API_KEY","server-key")
     try:
         _,(_,a),_=accounts
         p=new_project(client,a);url=P+"/"+p["id"]
-        client.put(url+"/data",headers=a,json={"revision":1,"measurement_key":SCOPE["measurement_key"],"rows":ROWS})
+        settings_response=client.put(url+"/model-settings",headers=a,json={
+            "revision":1,
+            "base_url":f"http://127.0.0.1:{server.server_port}/v1",
+            "model":"test-provider-model",
+            "api_key":"test-private-key",
+            "timeout":90,
+        })
+        assert settings_response.status_code==200,settings_response.text
+        client.put(url+"/data",headers=a,json={"revision":2,"measurement_key":SCOPE["measurement_key"],"rows":ROWS})
         result=client.post(url+"/ask",headers=a,json={**SCOPE,"question":"累计变化多少","mode":"data"})
         assert result.status_code==200,result.text
         assert result.json()["answer"]=="累计变化量为 -10 mm [M1]"
